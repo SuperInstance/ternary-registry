@@ -113,6 +113,7 @@ impl Skill {
 }
 
 /// Skill registry: register, discover, and query skills.
+#[derive(Clone)]
 pub struct SkillRegistry {
     skills: HashMap<String, Skill>,
 }

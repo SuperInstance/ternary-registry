@@ -57,7 +57,7 @@ fn main() {
     println!("Estimation skills: {}", skills.len());
 
     // Resolve dependencies (topological order)
-    let resolver = SkillDependencyResolver::new(reg.clone());
+    let resolver = SkillDependencyResolver::new(reg);
     let order = resolver.resolve(&main_id).unwrap();
     println!("Load order: {:?}", order.iter().map(|s| &s.name).collect::<Vec<_>>());
 
@@ -119,6 +119,21 @@ Part of the **SuperInstance** ternary computing ecosystem:
 - [`ternary-constraint`](https://crates.io/crates/ternary-constraint) — constraint satisfaction for ternary variables
 - [`ternary-control`](https://crates.io/crates/ternary-control) — ternary control theory
 - [`ternary-sensor`](https://crates.io/crates/ternary-sensor) — sensor classification and fusion
+
+## Known Limitations
+
+- **Registry queries are linear scans** with no indexing. Performance degrades linearly with skill count. Appropriate for dozens to hundreds of skills, not thousands.
+- **`SkillDependencyResolver::new` takes ownership of the registry** (requires `.clone()`), which is expensive for large registries.
+- **`VersionConstraint::satisfies` ignores pre-release tags and build metadata** — not full semver compliance.
+- **`RegistrySync` compares version counters only**, not actual skill content. Two registries at the same version with different skills would report `InSync`.
+- **This crate has nothing to do with ternary values** despite the name. It serves as infrastructure for the ecosystem.
+
+## Known Limitations
+
+- **No concurrent access**: `SkillRegistry` is not `Sync` and cannot be shared across threads without external synchronization (e.g., `Arc<Mutex<SkillRegistry>>`).
+- **Dependency resolution is depth-first**: The topological sort uses recursive DFS, which can overflow the stack for deeply nested dependency chains.
+- **Simple version compatibility**: `is_compatible_with()` only checks major equality and minor >=, ignoring patch-level incompatibilities that may be critical.
+- **No circular dependency detection**: Cyclic dependencies will cause the resolver to return an error string rather than providing a structured cycle report.
 
 ## License
 
