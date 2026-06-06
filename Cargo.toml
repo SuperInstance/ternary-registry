@@ -2,5 +2,6 @@
 name = "ternary-registry"
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
-description = "Capability and skill registry for construct-core integration"
+description = "Ternary service registry for GPU fleet. Nodes register capabilities, clients discover services. Health-based ternary scoring: healthy(1), degraded(0), failed(-1). CRDT sync."
+license = "Apache-2.0"
+repository = "https://github.com/SuperInstance/ternary-registry"
