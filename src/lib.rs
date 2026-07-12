@@ -94,7 +94,7 @@ impl ServiceRegistry {
     pub fn discover_least_loaded(&self, capability: &str) -> Option<&ServiceNode> {
         self.discover_healthy(capability)
             .into_iter()
-            .min_by(|a, b| a.load.partial_cmp(&b.load).unwrap())
+            .min_by(|a, b| a.load.total_cmp(&b.load))
     }
 
     pub fn update_health(&mut self, id: &str, health: Health) {
@@ -193,6 +193,20 @@ mod tests {
         reg.register(ServiceNode::new("gpu-0", vec!["matmul"]));
         reg.deregister("gpu-0");
         assert_eq!(reg.node_count(), 0);
+    }
+
+    #[test]
+    fn test_least_loaded_with_nan_load() {
+        let mut reg = ServiceRegistry::new();
+        let mut n1 = ServiceNode::new("gpu-0", vec!["matmul"]);
+        n1.load = f64::NAN;
+        let mut n2 = ServiceNode::new("gpu-1", vec!["matmul"]);
+        n2.load = 0.5;
+        reg.register(n1);
+        reg.register(n2);
+        // Must not panic; NaN should not crash discovery.
+        let best = reg.discover_least_loaded("matmul").unwrap();
+        assert_eq!(best.id, "gpu-1");
     }
 
     #[test]
