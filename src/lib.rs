@@ -130,7 +130,7 @@ impl ServiceRegistry {
     pub fn healthy_count(&self) -> usize {
         self.nodes
             .values()
-            .filter(|n| n.health == Health::Healthy)
+            .filter(|n| n.health != Health::Failed)
             .count()
     }
     pub fn service_count(&self) -> usize {
@@ -256,5 +256,119 @@ mod tests {
         assert_eq!(reg.node_count(), 2);
         assert_eq!(reg.service_count(), 2);
         assert_eq!(reg.healthy_count(), 2);
+    }
+
+    // --- Ternary health invariant: Degraded nodes are discoverable
+    // but excluded from the healthy-only path ---
+
+    #[test]
+    fn test_degraded_included_in_discover() {
+        let mut reg = ServiceRegistry::new();
+        reg.register(ServiceNode::new("gpu-0", vec!["matmul"]));
+        reg.update_health("gpu-0", Health::Degraded);
+        let nodes = reg.discover("matmul");
+        // Degraded nodes are still discoverable (only Failed is excluded).
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn test_degraded_excluded_from_healthy() {
+        let mut reg = ServiceRegistry::new();
+        reg.register(ServiceNode::new("gpu-0", vec!["matmul"]));
+        reg.update_health("gpu-0", Health::Degraded);
+        // Degraded nodes must NOT appear in discover_healthy.
+        let nodes = reg.discover_healthy("matmul");
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn test_least_loaded_none_when_all_degraded() {
+        let mut reg = ServiceRegistry::new();
+        reg.register(ServiceNode::new("gpu-0", vec!["matmul"]));
+        reg.update_health("gpu-0", Health::Degraded);
+        // No healthy nodes → least loaded should be None.
+        assert!(reg.discover_least_loaded("matmul").is_none());
+    }
+
+    // --- CRDT merge invariants (hand-verified, see commit message) ---
+
+    #[test]
+    fn test_crdt_merge_adds_new_nodes() {
+        let mut r1 = ServiceRegistry::new();
+        r1.register(ServiceNode::new("gpu-0", vec!["matmul"]));
+        let mut r2 = ServiceRegistry::new();
+        r2.register(ServiceNode::new("gpu-1", vec!["attention"]));
+        r1.crdt_merge(&r2);
+        // gpu-1 was only in r2; it should now be in r1.
+        assert_eq!(r1.node_count(), 2);
+        assert!(r1.nodes.contains_key("gpu-1"));
+    }
+
+    #[test]
+    fn test_crdt_merge_preserves_non_failed_health() {
+        // Local node is Degraded; remote node (same ID) is Healthy.
+        // Merge must NOT overwrite local Degraded with remote Healthy.
+        let mut r1 = ServiceRegistry::new();
+        r1.register(ServiceNode::new("gpu-0", vec!["matmul"]));
+        r1.update_health("gpu-0", Health::Degraded);
+
+        let mut r2 = ServiceRegistry::new();
+        r2.register(ServiceNode::new("gpu-0", vec!["matmul"]));
+        // r2's gpu-0 is Healthy (default) — NOT Failed.
+
+        r1.crdt_merge(&r2);
+        assert_eq!(
+            r1.nodes["gpu-0"].health,
+            Health::Degraded,
+            "non-failed remote must not overwrite local health"
+        );
+    }
+
+    #[test]
+    fn test_crdt_merge_is_idempotent() {
+        // Two identical registries.
+        let make = || {
+            let mut r = ServiceRegistry::new();
+            r.register(ServiceNode::new("gpu-0", vec!["matmul"]));
+            r.update_health("gpu-0", Health::Failed);
+            r.register(ServiceNode::new("gpu-1", vec!["matmul"]));
+            r
+        };
+        let mut r1 = make();
+        let r2 = make();
+
+        // First merge.
+        r1.crdt_merge(&r2);
+        let health_after_first = r1.nodes["gpu-0"].health;
+        let count_after_first = r1.node_count();
+
+        // Second merge of the same source must be a no-op.
+        r1.crdt_merge(&r2);
+        assert_eq!(r1.nodes["gpu-0"].health, health_after_first);
+        assert_eq!(r1.node_count(), count_after_first);
+    }
+
+    // --- No-panic edge cases ---
+
+    #[test]
+    fn test_deregister_nonexistent_no_panic() {
+        let mut reg = ServiceRegistry::new();
+        // Should silently do nothing.
+        reg.deregister("does-not-exist");
+        assert_eq!(reg.node_count(), 0);
+    }
+
+    #[test]
+    fn test_update_health_nonexistent_no_panic() {
+        let mut reg = ServiceRegistry::new();
+        reg.update_health("ghost", Health::Failed);
+        assert_eq!(reg.node_count(), 0);
+    }
+
+    #[test]
+    fn test_update_load_nonexistent_no_panic() {
+        let mut reg = ServiceRegistry::new();
+        reg.update_load("ghost", 0.99);
+        assert_eq!(reg.node_count(), 0);
     }
 }
