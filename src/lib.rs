@@ -47,6 +47,10 @@ impl ServiceRegistry {
     }
 
     pub fn register(&mut self, node: ServiceNode) {
+        // Remove any existing entry with the same ID so that
+        // re-registration does not leave stale or duplicate
+        // entries in the service index.
+        self.deregister(&node.id);
         for cap in &node.capabilities {
             self.service_index
                 .entry(cap.clone())
@@ -187,6 +191,20 @@ mod tests {
         reg.register(ServiceNode::new("gpu-0", vec!["matmul"]));
         reg.deregister("gpu-0");
         assert_eq!(reg.node_count(), 0);
+    }
+
+    #[test]
+    fn test_reregister_no_duplicate_index() {
+        let mut reg = ServiceRegistry::new();
+        reg.register(ServiceNode::new("gpu-0", vec!["matmul"]));
+        // Re-register same node ID with same capability
+        reg.register(ServiceNode::new("gpu-0", vec!["matmul"]));
+        let nodes = reg.discover("matmul");
+        assert_eq!(
+            nodes.len(),
+            1,
+            "re-registration must not duplicate index entries"
+        );
     }
 
     #[test]
