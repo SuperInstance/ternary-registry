@@ -67,6 +67,8 @@ impl ServiceRegistry {
                     v.retain(|n| n != id);
                 }
             }
+            // Prune empty capability entries so service_count() stays accurate.
+            self.service_index.retain(|_, v| !v.is_empty());
         }
     }
 
@@ -191,6 +193,20 @@ mod tests {
         reg.register(ServiceNode::new("gpu-0", vec!["matmul"]));
         reg.deregister("gpu-0");
         assert_eq!(reg.node_count(), 0);
+    }
+
+    #[test]
+    fn test_deregister_cleans_service_index() {
+        let mut reg = ServiceRegistry::new();
+        reg.register(ServiceNode::new("gpu-0", vec!["matmul"]));
+        reg.deregister("gpu-0");
+        // After deregistering the only node with "matmul", the capability
+        // should no longer be counted by service_count().
+        assert_eq!(
+            reg.service_count(),
+            0,
+            "empty capability entries must be pruned from service_index"
+        );
     }
 
     #[test]
