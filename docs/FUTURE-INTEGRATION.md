@@ -2,49 +2,40 @@
 
 ## Current State
 
-ternary-registry provides capability and skill registry for construct-core integration. `SkillId` (namespace::name@version) identifies skills with `SemVersion`. `Skill` has tier (`Basic`/`Standard`/`Advanced`/`Expert`), description, dependencies, and capabilities. `SkillRegistry` manages registration, lookup, and querying (`find_by_name`, `find_by_tier`, `find_by_capability`, multi-criteria `query()`). `SkillDependencyResolver` performs topological sort with circular dependency detection. `CapabilityMatrix` defines tier → capability mappings (Basic: read/query, Expert: all + admin/delegate). `RegistrySync` tracks local vs remote versions with conflict detection.
+ternary-registry provides a ternary service registry for GPU fleets. `ServiceNode` represents a compute node with an ID, capabilities, health status (`Healthy`/`Degraded`/`Failed`), load, and version. `ServiceRegistry` manages registration, deregistration, and capability-based discovery. Discovery filters by health: `discover()` returns all non-failed nodes, `discover_healthy()` returns only healthy nodes, and `discover_least_loaded()` finds the healthiest, least-busy node. A `crdt_merge()` protocol propagates failure state across registry instances.
 
 ## Integration Opportunities
 
-### Equipment Pattern Bridge (Primary Integration)
+### Fleet Health Aggregation
 
-The Cross-Pollination Report maps TypeScript `EquipmentSlot` to `SkillTier`: Memory/Communication → Basic, Spreadsheet/Distillation/Monitoring → Standard, Reasoning/Perception → Advanced, Consensus/Coordination/SelfImprovement → Expert. The `SkillRegistry` IS the equipment inventory. When `OriginCore` (from SuperInstance-Starter-Agent) needs a skill:
+Each GPU node registers with its capabilities and current health. A central coordinator can call `crdt_merge()` across all node-local registries to build a fleet-wide view. Because the merge propagates `Failed` monotonically, any node marked failed by any replica converges to `Failed` everywhere — enabling automatic drain of unhealthy nodes without explicit coordination.
 
-1. `SkillDependencyResolver::resolve(skill_id)` returns the topological load order
-2. Each dependency is loaded via construct-core's `load_skill()`
-3. `CapabilityMatrix::supports_all(tier, capabilities)` validates the hardware can run it
+### Load-Aware Scheduling
 
-### Ensign Pattern → Skill-Backed Specialists
+`discover_least_loaded(capability)` provides a simple load-balancing primitive. A scheduler queries the registry for the least-loaded healthy node capable of handling a given workload (e.g., `"matmul"`, `"attention"`). Nodes report their load via `update_load()`, and the scheduler picks the minimum. Degraded nodes remain discoverable via `discover()` but are excluded from the load-balancing path.
 
-Every `ternary-ensign::Ensign` maps to a `Skill` in the registry. The `EnsignBridge` (domain → skill_name) uses `SkillRegistry::find_by_name()` to locate the skill. The ensign's `required_skills()` maps to `Skill::dependencies`. When an ensign is loaded into a room, `SkillDependencyResolver` ensures all dependencies are available on the hardware tier. If `CapabilityMatrix::supports(tier, "network")` returns false for the current tier, network-dependent ensigns can't load.
+### Health-Driven Circuit Breaking
 
-### RegistrySync → Fleet-Wide Skill Distribution
+The ternary health model maps naturally to circuit-breaker states:
+- **Healthy (1)**: normal operation, eligible for all discovery paths
+- **Degraded (0)**: still serving but excluded from `discover_healthy()` — a "soft degrade" that keeps the node visible without routing new traffic to it
+- **Failed (−1)**: completely removed from discovery, triggering failover
 
-`RegistrySync` with its `check_status()` (InSync/Behind/Ahead/Conflict), `skills_to_pull()`, `skills_to_push()`, and `detect_conflicts()` enables fleet-wide skill distribution:
+External health checks call `update_health()` to transition nodes between states. The registry enforces the invariant: failed nodes are invisible to all discovery methods.
 
-1. Oracle1 (PLATO) holds the master registry
-2. Each Codespace/Edge room syncs on entry: `RegistrySync::check_status()`
-3. New skills are pulled: `skills_to_pull()` → `SkillDependencyResolver::resolve()` → download
-4. Conflicts detected: `detect_conflicts()` → version negotiation via `VersionConstraint`
+### Multi-Instance Sync
 
-### linguistic-polyformalism → 7-Type Capability Auditing
+Two `ServiceRegistry` instances can diverge independently (e.g., edge nodes vs. central coordinator). `crdt_merge()` reconciles them:
 
-The 7 constraint types from `linguistic-polyformalism-shell` (Boundary, Pattern, ProcessShape, KnowledgeSource, SocialStructure, DeepStructure, Instrument) become the `Skill::capabilities` taxonomy. A skill with all 7 types declared has complete self-description. `SkillRegistry::find_by_capability("Boundary")` finds all boundary-aware skills. Missing types indicate blind spots.
+1. Nodes only in the source registry are added to the target
+2. Nodes marked `Failed` in the source propagate `Failed` to the target
+3. Non-failed health states are preserved locally (idempotent for the failure semilattice)
 
-## Potential in Mature Systems
-
-`SkillRegistry` becomes the package manager for the ternary ecosystem. Every crate, every ensign, every construct-core skill registers here. `SkillDependencyResolver` prevents circular dependencies across the entire fleet. `CapabilityMatrix` ensures skills only run on hardware that supports them. `RegistrySync` keeps all rooms in sync. `VersionConstraint` enables rolling upgrades without breaking compatibility.
-
-## Cross-Pollination Ideas
-
-- **ternary-locks → Skill access control**: `Lock` patterns gate skill access. A `LockComposition::And([Capability::Admin, Capability::Delegate])` = only expert-tier rooms can load admin skills.
-- **ternary-econ → Skill pricing**: `PortfolioOptimizer` determines which skills to load based on cost/benefit. Skills with high invocation count but low resource cost get priority.
-- **Skill registry → crates.io mirror**: `SkillRegistry` mirrors crates.io packages as skills. Every published ternary crate auto-registers.
+This makes merge safe to call repeatedly without risk of "un-failing" a node.
 
 ## Dependencies for Next Steps
 
-1. `SkillRegistry` → `construct-core` `load_skill()` integration
-2. `RegistrySync` → PLATO tile store protocol
-3. `CapabilityMatrix` → hardware tier auto-detection
-4. Fleet-wide skill resolution across org boundaries
-5. `VersionConstraint` → semantic version policy enforcement
+1. **Persistence layer**: currently in-memory only; needs a checkpoint/restore mechanism
+2. **Concurrency**: `ServiceRegistry` is not `Sync`; production use requires `Arc<Mutex<_>>` or a lock-free redesign
+3. **Version negotiation**: the `version` field is stored but unused; future work could add semver-based compatibility checks for capability routing
+4. **Network transport**: `crdt_merge` operates on in-memory references; a serialization layer (serde) is needed for cross-process sync
